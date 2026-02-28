@@ -76,18 +76,8 @@ class JobMonitoringSystem:
             # Process each job
             new_jobs_count = 0
             for job in jobs:
-                job_id = job.get('job_id')
-                
-                # Check if job is already in database
-                if not self.database.job_exists(job_id):
-                    # Add to database
-                    if self.database.add_job(job):
-                        new_jobs_count += 1
-                        
-                        # Send notification
-                        if self.notifications.send_job_alert(job):
-                            self.database.mark_job_sent(job_id, 'multi-channel')
-                            self.notifications_sent += 1
+                if self.notify_if_new(job):
+                    new_jobs_count += 1
             
             # Display statistics
             db_stats = self.database.get_job_count()
@@ -153,6 +143,25 @@ class JobMonitoringSystem:
         """
         print(shutdown_msg)
         self.logger.info(f"Monitoring stopped. Checks: {self.check_count}, Jobs found: {self.jobs_found}, Notifications sent: {self.notifications_sent}")
+
+    def notify_if_new(self, job: dict) -> bool:
+        """Send notification only if job doesn't exist yet."""
+        job_id = job.get('job_id')
+
+        if not job_id:
+            job['job_id'] = self.scraper.generate_job_id(job)
+            job_id = job['job_id']
+
+        if self.database.job_exists(job_id):
+            return False
+
+        if self.database.add_job(job):
+            if self.notifications.send_job_alert(job):
+                self.database.mark_job_sent(job_id, 'multi-channel')
+                self.notifications_sent += 1
+            return True
+
+        return False
 
 
 def main():
