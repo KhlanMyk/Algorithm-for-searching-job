@@ -78,6 +78,25 @@ SEARCH_INDEED = os.getenv("SEARCH_INDEED", "true").lower() == "true"
 SEARCH_LINKEDIN = os.getenv("SEARCH_LINKEDIN", "true").lower() == "true"
 SEARCH_STACKOVERFLOW = os.getenv("SEARCH_STACKOVERFLOW", "true").lower() == "true"
 
+# Employer Sites / Search Engine Discovery
+# If you can't use LinkedIn/Indeed APIs, enable search via employer sites.
+SEARCH_EMPLOYER_SITES = os.getenv("SEARCH_EMPLOYER_SITES", "true").lower() == "true"
+SEARCH_ENGINE_ENABLED = os.getenv("SEARCH_ENGINE_ENABLED", "true").lower() == "true"
+SEARCH_ENGINE_PROVIDER = os.getenv("SEARCH_ENGINE_PROVIDER", "duckduckgo").lower()
+SEARCH_ENGINE_MAX_RESULTS = int(os.getenv("SEARCH_ENGINE_MAX_RESULTS", "15"))
+
+# Optional: add specific employer career pages or job boards to scan directly
+# Examples:
+# EMPLOYER_SITE_URLS = [
+#     "https://openai.com/careers/",
+#     "https://boards.greenhouse.io/stripe",
+#     "https://jobs.lever.co/airbnb",
+# ]
+EMPLOYER_SITE_URLS = []
+
+# URL path keywords to keep when using search-engine discovery
+EMPLOYER_SITE_PATH_KEYWORDS = ["careers", "career", "jobs", "job", "vacancies", "opportunities", "openings"]
+
 # Demo Mode (for testing without external APIs)
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
 
