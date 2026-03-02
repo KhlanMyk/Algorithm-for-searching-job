@@ -78,6 +78,25 @@ SEARCH_INDEED = os.getenv("SEARCH_INDEED", "true").lower() == "true"
 SEARCH_LINKEDIN = os.getenv("SEARCH_LINKEDIN", "true").lower() == "true"
 SEARCH_STACKOVERFLOW = os.getenv("SEARCH_STACKOVERFLOW", "true").lower() == "true"
 
+# New free sources (no API keys required)
+SEARCH_GREENHOUSE = os.getenv("SEARCH_GREENHOUSE", "true").lower() == "true"
+SEARCH_LEVER = os.getenv("SEARCH_LEVER", "true").lower() == "true"
+SEARCH_REMOTEOK = os.getenv("SEARCH_REMOTEOK", "true").lower() == "true"
+SEARCH_HN_HIRING = os.getenv("SEARCH_HN_HIRING", "true").lower() == "true"
+
+# Popular Greenhouse boards to monitor (company slugs)
+GREENHOUSE_BOARDS = [
+    "stripe", "airbnb", "figma", "notion", "coinbase",
+    "duolingo", "brex", "discord", "airtable", "ramp",
+    "databricks", "plaid", "robinhood", "reddit",
+]
+
+# Popular Lever boards to monitor (company slugs)
+LEVER_BOARDS = [
+    "netflix", "openai", "anduril", "verkada", "scale",
+    "pinterestcareers", "cloudflare", "cockroachlabs",
+]
+
 # Employer Sites / Search Engine Discovery
 # If you can't use LinkedIn/Indeed APIs, enable search via employer sites.
 SEARCH_EMPLOYER_SITES = os.getenv("SEARCH_EMPLOYER_SITES", "true").lower() == "true"
