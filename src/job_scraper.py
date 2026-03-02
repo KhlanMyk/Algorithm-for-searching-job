@@ -47,6 +47,64 @@ class JobScraper:
         haystack = self._normalize_text(text)
         return any(self._normalize_text(k) in haystack for k in keywords if k)
 
+    # ---------- Fuzzy deduplication ----------
+    @staticmethod
+    def _sim(a: str, b: str) -> float:
+        return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+    @classmethod
+    def deduplicate_jobs(cls, jobs: List[Dict], threshold: float = 0.85) -> List[Dict]:
+        """Remove near-duplicate jobs (same title+company from different sources)."""
+        unique: List[Dict] = []
+        for job in jobs:
+            jtitle = job.get('title', '')
+            jcomp = job.get('company', '')
+            is_dup = False
+            for kept in unique:
+                if (cls._sim(jtitle, kept.get('title', '')) > threshold
+                        and cls._sim(jcomp, kept.get('company', '')) > threshold):
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique.append(job)
+        removed = len(jobs) - len(unique)
+        if removed:
+            print(f"🧹 Removed {removed} near-duplicate job(s)")
+        return unique
+
+    # ---------- Relevance scoring ----------
+    @staticmethod
+    def score_job(job: Dict, keywords: List[str],
+                  title_weight: float = 3.0,
+                  desc_weight: float = 1.0) -> float:
+        """Score a job by keyword relevance (higher = better match)."""
+        score = 0.0
+        title = (job.get('title') or '').lower()
+        desc = (job.get('description') or '').lower()
+        for kw in keywords:
+            kw_low = kw.lower().strip()
+            if not kw_low:
+                continue
+            # exact substring match
+            if kw_low in title:
+                score += title_weight
+            if kw_low in desc:
+                score += desc_weight
+            # partial word match (individual tokens)
+            for token in kw_low.split():
+                if token in title:
+                    score += title_weight * 0.3
+                if token in desc:
+                    score += desc_weight * 0.2
+        return round(score, 2)
+
+    @classmethod
+    def rank_jobs(cls, jobs: List[Dict], keywords: List[str]) -> List[Dict]:
+        """Return jobs sorted by relevance (best first), with score attached."""
+        for j in jobs:
+            j['relevance_score'] = cls.score_job(j, keywords)
+        return sorted(jobs, key=lambda j: j.get('relevance_score', 0), reverse=True)
+
     def _extract_json_ld_jobs(self, soup: BeautifulSoup, base_url: str, source_name: str, keywords: List[str]) -> List[Dict]:
         jobs = []
         scripts = soup.find_all("script", attrs={"type": "application/ld+json"})

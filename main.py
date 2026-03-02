@@ -11,10 +11,20 @@ import os
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from config.config import *
+from config.config import *  # noqa: F403,F401
 from src.job_scraper import JobScraper
 from src.database import JobDatabase
 from src.notifications import NotificationManager
+
+# Ensure new config vars have defaults if missing
+try:
+    NOTIFICATION_MODE  # noqa: F405
+except NameError:
+    NOTIFICATION_MODE = 'digest'
+try:
+    DEDUP_THRESHOLD  # noqa: F405
+except NameError:
+    DEDUP_THRESHOLD = 0.85
 
 
 class JobMonitoringSystem:
@@ -72,12 +82,38 @@ class JobMonitoringSystem:
             # Scrape jobs from all sources
             jobs = self.scraper.scrape_all_sources(JOB_SEARCH_KEYWORDS)
             self.jobs_found += len(jobs)
+
+            # Fuzzy deduplication
+            jobs = self.scraper.deduplicate_jobs(jobs, threshold=DEDUP_THRESHOLD)
+
+            # Relevance scoring & ranking
+            jobs = self.scraper.rank_jobs(jobs, JOB_SEARCH_KEYWORDS)
             
-            # Process each job
-            new_jobs_count = 0
+            # Filter to only truly new jobs
+            new_jobs = []
             for job in jobs:
-                if self.notify_if_new(job):
-                    new_jobs_count += 1
+                job_id = job.get('job_id')
+                if not job_id:
+                    job['job_id'] = self.scraper.generate_job_id(job)
+                    job_id = job['job_id']
+                if not self.database.job_exists(job_id):
+                    if self.database.add_job(job):
+                        new_jobs.append(job)
+
+            # Send notifications
+            if new_jobs:
+                if NOTIFICATION_MODE == 'digest':
+                    # Single grouped message
+                    if self.notifications.send_digest(new_jobs):
+                        for job in new_jobs:
+                            self.database.mark_job_sent(job['job_id'], 'digest')
+                        self.notifications_sent += len(new_jobs)
+                else:
+                    # One message per job (instant mode)
+                    for job in new_jobs:
+                        if self.notifications.send_job_alert(job):
+                            self.database.mark_job_sent(job['job_id'], 'multi-channel')
+                            self.notifications_sent += 1
             
             # Display statistics
             db_stats = self.database.get_job_count()
@@ -85,11 +121,14 @@ class JobMonitoringSystem:
             print(f"   Total jobs in database: {sum(db_stats.values())}")
             print(f"   Pending notifications: {db_stats.get('pending', 0)}")
             print(f"   Sent notifications: {db_stats.get('sent', 0)}")
-            print(f"   New jobs this check: {new_jobs_count}")
+            print(f"   New jobs this check: {len(new_jobs)}")
+            if new_jobs:
+                top = new_jobs[0]
+                print(f"   🏆 Top match: {top.get('title','')} @ {top.get('company','')} (score {top.get('relevance_score',0)})")
             print(f"   Total checks: {self.check_count}")
             print(f"   Total notifications sent: {self.notifications_sent}")
             
-            if new_jobs_count == 0:
+            if not new_jobs:
                 print(f"   ✅ No new jobs found (already sent or no matches)")
             
         except Exception as e:

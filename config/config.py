@@ -116,6 +116,12 @@ EMPLOYER_SITE_URLS = []
 # URL path keywords to keep when using search-engine discovery
 EMPLOYER_SITE_PATH_KEYWORDS = ["careers", "career", "jobs", "job", "vacancies", "opportunities", "openings"]
 
+# Notification mode: "instant" (one per job) or "digest" (batched per check cycle)
+NOTIFICATION_MODE = os.getenv("NOTIFICATION_MODE", "digest").lower()  # instant | digest
+
+# Fuzzy deduplication threshold (0.0–1.0, higher = stricter)
+DEDUP_THRESHOLD = float(os.getenv("DEDUP_THRESHOLD", "0.85"))
+
 # Demo Mode (for testing without external APIs)
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
 

@@ -160,3 +160,63 @@ class NotificationManager:
                 success = True
         
         return success
+
+    # ---- Digest mode: group multiple jobs into one message ----
+
+    def send_digest(self, jobs: List[Dict]) -> bool:
+        """Send a single digest message containing all new jobs."""
+        if not jobs:
+            return False
+
+        success = False
+
+        if self.telegram:
+            if self._send_telegram_digest(jobs):
+                success = True
+
+        if self.email:
+            if self._send_email_digest(jobs):
+                success = True
+
+        return success
+
+    def _send_telegram_digest(self, jobs: List[Dict]) -> bool:
+        lines = [f"📋 <b>Job Digest — {len(jobs)} new job(s)</b>\n"]
+        for i, job in enumerate(jobs[:20], 1):  # cap at 20 to avoid msg limit
+            score = job.get('relevance_score', '')
+            score_str = f" [{score}⭐]" if score else ''
+            lines.append(
+                f"{i}. <b>{job.get('title', 'N/A')}</b>\n"
+                f"   🏢 {job.get('company', 'N/A')} · 📍 {job.get('location', 'N/A')}\n"
+                f"   🔗 <a href='{job.get('job_url', '#')}'>Apply</a>"
+                f"   📡 {job.get('source', '')}{score_str}\n"
+            )
+        if len(jobs) > 20:
+            lines.append(f"\n… and {len(jobs) - 20} more.")
+        return self.telegram.send_message("\n".join(lines))
+
+    def _send_email_digest(self, jobs: List[Dict]) -> bool:
+        rows = ""
+        for job in jobs[:50]:
+            score = job.get('relevance_score', '')
+            score_str = f' <span style="color:#e67e22">[{score}⭐]</span>' if score else ''
+            rows += f"""
+            <tr>
+                <td style="padding:8px;border-bottom:1px solid #eee">
+                    <b>{job.get('title','N/A')}</b>{score_str}<br>
+                    <span style="color:#555">{job.get('company','N/A')} · {job.get('location','N/A')}</span><br>
+                    <small>{job.get('source','')} · {job.get('posted_date','')}</small><br>
+                    <a href="{job.get('job_url','#')}">View Job →</a>
+                </td>
+            </tr>"""
+        html = f"""
+        <html><body style="font-family:Arial,sans-serif;color:#333">
+        <div style="background:#f5f5f5;padding:20px;border-radius:5px">
+            <h2 style="color:#0066cc">📋 Job Digest — {len(jobs)} new job(s)</h2>
+            <table width="100%">{rows}</table>
+            <hr>
+            <p style="font-size:12px;color:#999">Job Monitoring System — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
+        </body></html>"""
+        subject = f"📋 Job Digest: {len(jobs)} new positions found"
+        return self.email.send_email(self.config.EMAIL_RECIPIENT, subject, html, is_html=True)
