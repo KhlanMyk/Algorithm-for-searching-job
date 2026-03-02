@@ -549,7 +549,207 @@ class JobScraper:
         
         return jobs
 
-    
+    # ----------------------------------------------------------------
+    #  NEW FREE SOURCES (no API keys required)
+    # ----------------------------------------------------------------
+
+    def scrape_greenhouse_boards(self, keywords: List[str]) -> List[Dict]:
+        """Scrape Greenhouse job boards (JSON API, no key needed)."""
+        jobs = []
+        try:
+            from config.config import GREENHOUSE_BOARDS
+        except Exception:
+            GREENHOUSE_BOARDS = []
+
+        for company in GREENHOUSE_BOARDS:
+            try:
+                url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs"
+                response = requests.get(url, timeout=self.timeout, headers=self.headers)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                for item in data.get("jobs", []):
+                    title = item.get("title", "")
+                    location_obj = item.get("location", {}) or {}
+                    location = location_obj.get("name", "N/A") if isinstance(location_obj, dict) else str(location_obj)
+                    job_url = item.get("absolute_url", "")
+
+                    if not self._keyword_match(title, keywords):
+                        continue
+
+                    job = {
+                        'title': title,
+                        'company': company.replace("-", " ").title(),
+                        'location': location,
+                        'job_url': job_url,
+                        'description': BeautifulSoup(item.get("content", ""), "html.parser").get_text(" ")[:500],
+                        'source': f'Greenhouse ({company})',
+                        'posted_date': (item.get("updated_at") or datetime.now().isoformat())[:10],
+                    }
+                    job['job_id'] = self.generate_job_id(job)
+                    jobs.append(job)
+            except Exception as e:
+                print(f"❌ Greenhouse/{company}: {e}")
+
+        if jobs:
+            print(f"✅ Found {len(jobs)} jobs from Greenhouse boards")
+        else:
+            print(f"⚠️  No matching jobs on Greenhouse boards")
+        return jobs
+
+    def scrape_lever_boards(self, keywords: List[str]) -> List[Dict]:
+        """Scrape Lever job boards (JSON API, no key needed)."""
+        jobs = []
+        try:
+            from config.config import LEVER_BOARDS
+        except Exception:
+            LEVER_BOARDS = []
+
+        for company in LEVER_BOARDS:
+            try:
+                url = f"https://api.lever.co/v0/postings/{company}?mode=json"
+                response = requests.get(url, timeout=self.timeout, headers=self.headers)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                if not isinstance(data, list):
+                    continue
+
+                for item in data:
+                    title = item.get("text", "")
+                    categories = item.get("categories", {}) or {}
+                    location = categories.get("location", "N/A")
+                    job_url = item.get("hostedUrl") or item.get("applyUrl") or ""
+
+                    if not self._keyword_match(title, keywords):
+                        continue
+
+                    desc_plain = item.get("descriptionPlain", "")
+                    job = {
+                        'title': title,
+                        'company': company.replace("-", " ").title(),
+                        'location': location,
+                        'job_url': job_url,
+                        'description': desc_plain[:500],
+                        'source': f'Lever ({company})',
+                        'posted_date': datetime.fromtimestamp(
+                            item.get("createdAt", 0) / 1000
+                        ).isoformat() if item.get("createdAt") else datetime.now().isoformat(),
+                    }
+                    job['job_id'] = self.generate_job_id(job)
+                    jobs.append(job)
+            except Exception as e:
+                print(f"❌ Lever/{company}: {e}")
+
+        if jobs:
+            print(f"✅ Found {len(jobs)} jobs from Lever boards")
+        else:
+            print(f"⚠️  No matching jobs on Lever boards")
+        return jobs
+
+    def scrape_remoteok(self, keywords: List[str]) -> List[Dict]:
+        """Scrape RemoteOK (free JSON API, no key needed)."""
+        jobs = []
+        try:
+            url = "https://remoteok.com/api"
+            headers = {**self.headers, "Accept": "application/json"}
+            response = requests.get(url, timeout=self.timeout, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            # First element is metadata; skip it
+            listings = data[1:] if len(data) > 1 else []
+
+            for item in listings:
+                title = item.get("position", "")
+                company = item.get("company", "")
+                description = item.get("description", "")
+
+                if not self._keyword_match(f"{title} {description}", keywords):
+                    continue
+
+                job = {
+                    'title': title,
+                    'company': company,
+                    'location': item.get("location", "Remote"),
+                    'job_url': item.get("url", ""),
+                    'description': BeautifulSoup(description, "html.parser").get_text(" ")[:500],
+                    'source': 'RemoteOK',
+                    'posted_date': item.get("date", datetime.now().isoformat())[:10],
+                }
+                job['job_id'] = self.generate_job_id(job)
+                jobs.append(job)
+
+            if jobs:
+                print(f"✅ Found {len(jobs)} jobs from RemoteOK")
+            else:
+                print(f"⚠️  No matching jobs on RemoteOK")
+        except Exception as e:
+            print(f"❌ Error scraping RemoteOK: {e}")
+        return jobs
+
+    def scrape_hn_hiring(self, keywords: List[str]) -> List[Dict]:
+        """Scrape latest HackerNews 'Who is hiring?' thread (free, no key)."""
+        jobs = []
+        try:
+            # Find latest "Who is hiring?" story via Algolia HN API
+            search_url = "https://hn.algolia.com/api/v1/search"
+            params = {
+                "query": "Ask HN: Who is hiring?",
+                "tags": "story,ask_hn",
+                "hitsPerPage": 1,
+            }
+            resp = requests.get(search_url, params=params, timeout=self.timeout, headers=self.headers)
+            resp.raise_for_status()
+            hits = resp.json().get("hits", [])
+            if not hits:
+                print("⚠️  No HN 'Who is hiring?' thread found")
+                return jobs
+
+            story_id = hits[0].get("objectID")
+
+            # Fetch comments (each comment = one job)
+            comments_url = f"https://hn.algolia.com/api/v1/items/{story_id}"
+            resp2 = requests.get(comments_url, timeout=self.timeout, headers=self.headers)
+            resp2.raise_for_status()
+            children = resp2.json().get("children", [])
+
+            for child in children[:200]:  # cap to avoid huge processing
+                text = child.get("text", "")
+                if not text:
+                    continue
+                plain = BeautifulSoup(text, "html.parser").get_text(" ")
+
+                if not self._keyword_match(plain, keywords):
+                    continue
+
+                # First line is usually "Company | Location | ..."
+                first_line = plain.split("\n")[0]
+                parts = [p.strip() for p in first_line.split("|")]
+                company = parts[0] if len(parts) >= 1 else "N/A"
+                location = parts[1] if len(parts) >= 2 else "N/A"
+
+                hn_url = f"https://news.ycombinator.com/item?id={child.get('id', '')}"
+                job = {
+                    'title': first_line[:120],
+                    'company': company[:80],
+                    'location': location[:80],
+                    'job_url': hn_url,
+                    'description': plain[:500],
+                    'source': 'HackerNews Who is Hiring',
+                    'posted_date': child.get("created_at", datetime.now().isoformat())[:10],
+                }
+                job['job_id'] = self.generate_job_id(job)
+                jobs.append(job)
+
+            if jobs:
+                print(f"✅ Found {len(jobs)} jobs from HN Who is Hiring")
+            else:
+                print(f"⚠️  No matching jobs in HN Who is Hiring")
+        except Exception as e:
+            print(f"❌ Error scraping HN hiring: {e}")
+        return jobs
+
     def scrape_all_sources(self, keywords: List[str]) -> List[Dict]:
         """Scrape all configured job sources"""
         all_jobs = []
@@ -586,10 +786,47 @@ class JobScraper:
 
         # Employer sites via search engine + direct URLs
         try:
-            from config.config import SEARCH_EMPLOYER_SITES
+            from config.config import SEARCH_EMPLOYER_SITES, SEARCH_GREENHOUSE, SEARCH_LEVER, SEARCH_REMOTEOK, SEARCH_HN_HIRING
         except Exception:
             SEARCH_EMPLOYER_SITES = False
+            SEARCH_GREENHOUSE = False
+            SEARCH_LEVER = False
+            SEARCH_REMOTEOK = False
+            SEARCH_HN_HIRING = False
 
+        # Greenhouse boards (free JSON API)
+        if SEARCH_GREENHOUSE:
+            print("  📌 Greenhouse Boards (JSON API)")
+            greenhouse_jobs = self.scrape_greenhouse_boards(keywords)
+            all_jobs.extend(greenhouse_jobs)
+        else:
+            greenhouse_jobs = []
+
+        # Lever boards (free JSON API)
+        if SEARCH_LEVER:
+            print("  📌 Lever Boards (JSON API)")
+            lever_jobs = self.scrape_lever_boards(keywords)
+            all_jobs.extend(lever_jobs)
+        else:
+            lever_jobs = []
+
+        # RemoteOK (free JSON API)
+        if SEARCH_REMOTEOK:
+            print("  📌 RemoteOK (JSON API)")
+            remoteok_jobs = self.scrape_remoteok(keywords)
+            all_jobs.extend(remoteok_jobs)
+        else:
+            remoteok_jobs = []
+
+        # HackerNews Who is Hiring
+        if SEARCH_HN_HIRING:
+            print("  📌 HackerNews Who is Hiring (Algolia API)")
+            hn_jobs = self.scrape_hn_hiring(keywords)
+            all_jobs.extend(hn_jobs)
+        else:
+            hn_jobs = []
+
+        # Employer sites via search engine + direct URLs
         if SEARCH_EMPLOYER_SITES:
             print("  📌 Employer Sites (Search Engine + Direct URLs)")
             employer_jobs = self.scrape_employer_sites(keywords)
@@ -602,9 +839,18 @@ class JobScraper:
             print(f"   - GitHub Jobs: {len(github_jobs)}")
             print(f"   - Indeed: {len(indeed_jobs)}")
             print(f"   - LinkedIn: {len(linkedin_jobs)}")
-            print(f"   - Stack Overflow: {len(stackoverflow_jobs)}\n")
+            print(f"   - Stack Overflow: {len(stackoverflow_jobs)}")
+            if SEARCH_GREENHOUSE:
+                print(f"   - Greenhouse: {len(greenhouse_jobs)}")
+            if SEARCH_LEVER:
+                print(f"   - Lever: {len(lever_jobs)}")
+            if SEARCH_REMOTEOK:
+                print(f"   - RemoteOK: {len(remoteok_jobs)}")
+            if SEARCH_HN_HIRING:
+                print(f"   - HN Who is Hiring: {len(hn_jobs)}")
             if SEARCH_EMPLOYER_SITES:
-                print(f"   - Employer Sites: {len(employer_jobs)}\n")
+                print(f"   - Employer Sites: {len(employer_jobs)}")
+            print()
         else:
             print("   No jobs found (external sources may not be accessible)\n")
         
