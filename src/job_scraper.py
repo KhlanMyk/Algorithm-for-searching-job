@@ -3,16 +3,48 @@ Job scraper module for collecting job listings from various sources
 """
 import requests
 import hashlib
+import time as _time
+import re
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable, Tuple
 from bs4 import BeautifulSoup
 import json
 import sys
 import os
 from urllib.parse import urlparse, urljoin, urlencode, parse_qs, unquote
+from difflib import SequenceMatcher
 
 # Add config to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+scraper_logger = logging.getLogger(__name__)
+
+
+def _requests_get_with_retry(url, *, max_retries=3, backoff=1.5, **kwargs):
+    """GET request with exponential-backoff retry on transient errors."""
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+            wait = backoff * (2 ** attempt)
+            scraper_logger.warning(f"Retry {attempt+1}/{max_retries} for {url}: {exc} (wait {wait:.1f}s)")
+            _time.sleep(wait)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status in (429, 500, 502, 503, 504):
+                last_exc = exc
+                wait = backoff * (2 ** attempt)
+                scraper_logger.warning(f"Retry {attempt+1}/{max_retries} for {url}: HTTP {status} (wait {wait:.1f}s)")
+                _time.sleep(wait)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]
 
 
 class JobScraper:
@@ -164,8 +196,7 @@ class JobScraper:
         urls = []
         try:
             url = "https://duckduckgo.com/html/"
-            response = requests.get(url, params={"q": query}, timeout=self.timeout, headers=self.headers)
-            response.raise_for_status()
+            response = _requests_get_with_retry(url, params={"q": query}, timeout=self.timeout, headers=self.headers)
             soup = BeautifulSoup(response.content, 'html.parser')
             for link in soup.select("a.result__a"):
                 href = self._extract_result_url(link.get("href"))
@@ -180,8 +211,7 @@ class JobScraper:
     def scrape_employer_site_url(self, url: str, keywords: List[str]) -> List[Dict]:
         jobs = []
         try:
-            response = requests.get(url, timeout=self.timeout, headers=self.headers)
-            response.raise_for_status()
+            response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
             soup = BeautifulSoup(response.content, 'html.parser')
 
             domain = urlparse(url).netloc
@@ -243,9 +273,7 @@ class JobScraper:
                 url = "https://jobs.github.com/positions.json"
                 params = {"description": keyword}
                 
-                response = requests.get(url, params=params, timeout=self.timeout, headers=self.headers)
-                response.raise_for_status()
-                
+                response = _requests_get_with_retry(url, params=params, timeout=self.timeout, headers=self.headers)
                 data = response.json()
                 
                 for job_data in data:
@@ -273,8 +301,7 @@ class JobScraper:
         jobs = []
         
         try:
-            response = requests.get(url, timeout=self.timeout, headers=self.headers)
-            response.raise_for_status()
+            response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
             
             # This is a basic template - customize based on the website structure
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -333,8 +360,7 @@ class JobScraper:
                     'useragent': 'Mozilla/5.0'
                 }
                 
-                response = requests.get(url, params=params, timeout=self.timeout)
-                response.raise_for_status()
+                response = _requests_get_with_retry(url, params=params, timeout=self.timeout)
                 
                 data = response.json()
                 
@@ -436,8 +462,7 @@ class JobScraper:
                     'useragent': 'Mozilla/5.0'
                 }
                 
-                response = requests.get(url, params=params, timeout=self.timeout)
-                response.raise_for_status()
+                response = _requests_get_with_retry(url, params=params, timeout=self.timeout)
                 
                 data = response.json()
                 
@@ -470,8 +495,7 @@ class JobScraper:
             try:
                 url = f"https://www.indeed.com/jobs?q={keyword}+internship&limit=25"
 
-                response = requests.get(url, timeout=self.timeout, headers=self.headers)
-                response.raise_for_status()
+                response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
 
                 soup = BeautifulSoup(response.content, 'html.parser')
 
@@ -516,8 +540,7 @@ class JobScraper:
                 search_term = keyword.replace(" ", "%20")
                 url = f"https://www.linkedin.com/jobs/search/?keywords={search_term}&position=1&pageNum=0"
                 
-                response = requests.get(url, timeout=self.timeout, headers=self.headers)
-                response.raise_for_status()
+                response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
                 
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
@@ -566,8 +589,7 @@ class JobScraper:
                     search_term = keyword.replace(" ", "+")
                     url = f"https://stackoverflow.com/jobs?q={search_term}&sort=i"
                     
-                    response = requests.get(url, timeout=self.timeout, headers=self.headers)
-                    response.raise_for_status()
+                    response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
                     
                     soup = BeautifulSoup(response.content, 'html.parser')
                     
@@ -622,9 +644,7 @@ class JobScraper:
         for company in GREENHOUSE_BOARDS:
             try:
                 url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs"
-                response = requests.get(url, timeout=self.timeout, headers=self.headers)
-                if response.status_code != 200:
-                    continue
+                response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
                 data = response.json()
                 for item in data.get("jobs", []):
                     title = item.get("title", "")
@@ -666,9 +686,7 @@ class JobScraper:
         for company in LEVER_BOARDS:
             try:
                 url = f"https://api.lever.co/v0/postings/{company}?mode=json"
-                response = requests.get(url, timeout=self.timeout, headers=self.headers)
-                if response.status_code != 200:
-                    continue
+                response = _requests_get_with_retry(url, timeout=self.timeout, headers=self.headers)
                 data = response.json()
                 if not isinstance(data, list):
                     continue
@@ -711,8 +729,7 @@ class JobScraper:
         try:
             url = "https://remoteok.com/api"
             headers = {**self.headers, "Accept": "application/json"}
-            response = requests.get(url, timeout=self.timeout, headers=headers)
-            response.raise_for_status()
+            response = _requests_get_with_retry(url, timeout=self.timeout, headers=headers)
             data = response.json()
 
             # First element is metadata; skip it
@@ -757,8 +774,7 @@ class JobScraper:
                 "tags": "story,ask_hn",
                 "hitsPerPage": 1,
             }
-            resp = requests.get(search_url, params=params, timeout=self.timeout, headers=self.headers)
-            resp.raise_for_status()
+            resp = _requests_get_with_retry(search_url, params=params, timeout=self.timeout, headers=self.headers)
             hits = resp.json().get("hits", [])
             if not hits:
                 print("⚠️  No HN 'Who is hiring?' thread found")
@@ -768,8 +784,7 @@ class JobScraper:
 
             # Fetch comments (each comment = one job)
             comments_url = f"https://hn.algolia.com/api/v1/items/{story_id}"
-            resp2 = requests.get(comments_url, timeout=self.timeout, headers=self.headers)
-            resp2.raise_for_status()
+            resp2 = _requests_get_with_retry(comments_url, timeout=self.timeout, headers=self.headers)
             children = resp2.json().get("children", [])
 
             for child in children[:200]:  # cap to avoid huge processing
@@ -809,107 +824,74 @@ class JobScraper:
         return jobs
 
     def scrape_all_sources(self, keywords: List[str]) -> List[Dict]:
-        """Scrape all configured job sources"""
-        all_jobs = []
-        
+        """Scrape all configured job sources in parallel."""
         print("\n🔍 Starting job search across all sources...")
         print(f"📍 Searching for: {', '.join(keywords)}\n")
-        print("📊 Sources being searched:")
-        
-        # GitHub Jobs (most reliable for this demo)
-        print("  📌 GitHub Jobs (API)")
-        github_jobs = self.scrape_github_jobs(keywords)
-        all_jobs.extend(github_jobs)
-        
-        # Indeed - Try API first, fallback to web scraping
-        print("  📌 Indeed (Official API or Web Scraping)")
-        if self.indeed_api_key and self.indeed_publisher_id:
-            indeed_jobs = self.scrape_indeed_api(keywords)
-        else:
-            indeed_jobs = self.scrape_indeed_snapshot(keywords)
-        all_jobs.extend(indeed_jobs)
-        
-        # LinkedIn - Try API first, fallback to web scraping
-        print("  📌 LinkedIn (Official API or Web Scraping)")
-        if self.linkedin_api_key:
-            linkedin_jobs = self.scrape_linkedin_api(keywords)
-        else:
-            linkedin_jobs = self.scrape_linkedin_jobs(keywords)
-        all_jobs.extend(linkedin_jobs)
-        
-        # Stack Overflow Jobs (tech jobs)
-        print("  📌 Stack Overflow (Web Scraping)")
-        stackoverflow_jobs = self.scrape_stackoverflow_jobs(keywords)
-        all_jobs.extend(stackoverflow_jobs)
 
-        # Employer sites via search engine + direct URLs
         try:
-            from config.config import SEARCH_EMPLOYER_SITES, SEARCH_GREENHOUSE, SEARCH_LEVER, SEARCH_REMOTEOK, SEARCH_HN_HIRING
+            from config.config import (SEARCH_EMPLOYER_SITES, SEARCH_GREENHOUSE,
+                                       SEARCH_LEVER, SEARCH_REMOTEOK, SEARCH_HN_HIRING)
         except Exception:
-            SEARCH_EMPLOYER_SITES = False
-            SEARCH_GREENHOUSE = False
-            SEARCH_LEVER = False
-            SEARCH_REMOTEOK = False
-            SEARCH_HN_HIRING = False
+            SEARCH_EMPLOYER_SITES = SEARCH_GREENHOUSE = SEARCH_LEVER = False
+            SEARCH_REMOTEOK = SEARCH_HN_HIRING = False
 
-        # Greenhouse boards (free JSON API)
+        # Build list of (label, callable) tasks
+        tasks: List[Tuple[str, Callable]] = [
+            ("GitHub Jobs", lambda: self.scrape_github_jobs(keywords)),
+        ]
+
+        if self.indeed_api_key and self.indeed_publisher_id:
+            tasks.append(("Indeed (API)", lambda: self.scrape_indeed_api(keywords)))
+        else:
+            tasks.append(("Indeed (Web)", lambda: self.scrape_indeed_snapshot(keywords)))
+
+        if self.linkedin_api_key:
+            tasks.append(("LinkedIn (API)", lambda: self.scrape_linkedin_api(keywords)))
+        else:
+            tasks.append(("LinkedIn (Web)", lambda: self.scrape_linkedin_jobs(keywords)))
+
+        tasks.append(("Stack Overflow", lambda: self.scrape_stackoverflow_jobs(keywords)))
+
         if SEARCH_GREENHOUSE:
-            print("  📌 Greenhouse Boards (JSON API)")
-            greenhouse_jobs = self.scrape_greenhouse_boards(keywords)
-            all_jobs.extend(greenhouse_jobs)
-        else:
-            greenhouse_jobs = []
-
-        # Lever boards (free JSON API)
+            tasks.append(("Greenhouse", lambda: self.scrape_greenhouse_boards(keywords)))
         if SEARCH_LEVER:
-            print("  📌 Lever Boards (JSON API)")
-            lever_jobs = self.scrape_lever_boards(keywords)
-            all_jobs.extend(lever_jobs)
-        else:
-            lever_jobs = []
-
-        # RemoteOK (free JSON API)
+            tasks.append(("Lever", lambda: self.scrape_lever_boards(keywords)))
         if SEARCH_REMOTEOK:
-            print("  📌 RemoteOK (JSON API)")
-            remoteok_jobs = self.scrape_remoteok(keywords)
-            all_jobs.extend(remoteok_jobs)
-        else:
-            remoteok_jobs = []
-
-        # HackerNews Who is Hiring
+            tasks.append(("RemoteOK", lambda: self.scrape_remoteok(keywords)))
         if SEARCH_HN_HIRING:
-            print("  📌 HackerNews Who is Hiring (Algolia API)")
-            hn_jobs = self.scrape_hn_hiring(keywords)
-            all_jobs.extend(hn_jobs)
-        else:
-            hn_jobs = []
-
-        # Employer sites via search engine + direct URLs
+            tasks.append(("HN Hiring", lambda: self.scrape_hn_hiring(keywords)))
         if SEARCH_EMPLOYER_SITES:
-            print("  📌 Employer Sites (Search Engine + Direct URLs)")
-            employer_jobs = self.scrape_employer_sites(keywords)
-            all_jobs.extend(employer_jobs)
-        else:
-            employer_jobs = []
-        
+            tasks.append(("Employer Sites", lambda: self.scrape_employer_sites(keywords)))
+
+        print(f"📊 Fetching {len(tasks)} sources in parallel...")
+        for label, _ in tasks:
+            print(f"  📌 {label}")
+
+        results: Dict[str, List[Dict]] = {}
+        all_jobs: List[Dict] = []
+
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as pool:
+            future_map = {pool.submit(fn): label for label, fn in tasks}
+            for future in as_completed(future_map):
+                label = future_map[future]
+                try:
+                    jobs = future.result()
+                except Exception as exc:
+                    scraper_logger.error(f"{label} failed: {exc}")
+                    print(f"  ❌ {label}: {exc}")
+                    jobs = []
+                results[label] = jobs
+                all_jobs.extend(jobs)
+
+        # Summary
         print(f"\n📊 Total jobs found across all sources: {len(all_jobs)}")
-        if len(all_jobs) > 0:
-            print(f"   - GitHub Jobs: {len(github_jobs)}")
-            print(f"   - Indeed: {len(indeed_jobs)}")
-            print(f"   - LinkedIn: {len(linkedin_jobs)}")
-            print(f"   - Stack Overflow: {len(stackoverflow_jobs)}")
-            if SEARCH_GREENHOUSE:
-                print(f"   - Greenhouse: {len(greenhouse_jobs)}")
-            if SEARCH_LEVER:
-                print(f"   - Lever: {len(lever_jobs)}")
-            if SEARCH_REMOTEOK:
-                print(f"   - RemoteOK: {len(remoteok_jobs)}")
-            if SEARCH_HN_HIRING:
-                print(f"   - HN Who is Hiring: {len(hn_jobs)}")
-            if SEARCH_EMPLOYER_SITES:
-                print(f"   - Employer Sites: {len(employer_jobs)}")
+        if all_jobs:
+            for label in [l for l, _ in tasks]:
+                count = len(results.get(label, []))
+                if count:
+                    print(f"   - {label}: {count}")
             print()
         else:
             print("   No jobs found (external sources may not be accessible)\n")
-        
+
         return all_jobs
